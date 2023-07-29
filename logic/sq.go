@@ -1,4 +1,4 @@
-package opmap
+package logic
 
 import "plugin_demo/plugin_sys"
 

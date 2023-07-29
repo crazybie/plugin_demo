@@ -1,11 +1,11 @@
 package plugin_imp
 
 import (
-	"plugin_demo/opmap"
+	"plugin_demo/logic"
 )
 
 type Sq struct {
-	opmap.Sq
+	logic.Sq
 }
 
 func (sq *Sq) Dump() {

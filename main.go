@@ -1,14 +1,14 @@
 package main
 
 import (
-	"plugin_demo/opmap"
+	"plugin_demo/logic"
 	"plugin_demo/plugin_imp"
 )
 
 func main() {
-	sq := opmap.Sq{Id: 1}
+	sq := logic.Sq{Id: 1}
 
-	opmap.SqClass.Patch(plugin_imp.NewSq())
+	logic.SqClass.Patch(plugin_imp.NewSq())
 
 	sq.Dump()
 	sq.SetId(111)
