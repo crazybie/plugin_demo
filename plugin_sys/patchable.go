@@ -45,14 +45,15 @@ func (pt *PatchableType) Patch(newPatchPtr any) {
 }
 
 func (pt *PatchableType) checkPatchTp(patchPtrTp reflect.Type) {
+	patch := patchPtrTp.Elem()
 	orig := pt.ptrTp.Elem()
-	patch := patchPtrTp.Elem().Field(0).Type
+	embeddedTp := patch.Field(0).Type
 
-	if patchPtrTp.Elem().Size() != orig.Size() {
-		panic(fmt.Errorf("patch type must not have extra fields"))
+	if patch.Size() != orig.Size() {
+		panic(fmt.Errorf("patch type must not have extra fields, %s", patch))
 	}
-	if patch != orig {
-		panic(fmt.Errorf("patch type must embed orig type as first elem, orig: %s, patch: %s", orig, patch))
+	if embeddedTp != orig {
+		panic(fmt.Errorf("patch type must embed orig type as first elem, orig: %s, patch: %s, first elem: %s", orig, patch, embeddedTp))
 	}
 
 	for i := 0; i < pt.ptrTp.NumMethod(); i++ {
