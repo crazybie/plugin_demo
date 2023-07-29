@@ -37,8 +37,8 @@ func NewPatchable[T any](_ T) (*PatchableType, *T) {
 func (pt *PatchableType) Patch(newPatchPtr any) {
 	patchPtrTp := reflect.TypeOf(newPatchPtr)
 	pt.checkPatchTp(patchPtrTp)
-	for i := 0; i < pt.ptrTp.NumMethod(); i++ {
-		origFn := pt.ptrTp.Method(i)
+	for name := range pt.fnSlots {
+		origFn, _ := pt.ptrTp.MethodByName(name)
 		newFn, _ := patchPtrTp.MethodByName(origFn.Name)
 		pt.fnSlots[origFn.Name].Elem().Set(reinterpretedCast(origFn.Type, newFn.Func))
 	}
@@ -56,8 +56,11 @@ func (pt *PatchableType) checkPatchTp(patchPtrTp reflect.Type) {
 		panic(fmt.Errorf("patch type must embed orig type as first elem, orig: %s, patch: %s, first elem: %s", orig, patch, embeddedTp))
 	}
 
-	for i := 0; i < pt.ptrTp.NumMethod(); i++ {
-		origFn := pt.ptrTp.Method(i)
+	for name := range pt.fnSlots {
+		origFn, ok := pt.ptrTp.MethodByName(name)
+		if !ok {
+			panic(fmt.Errorf("%s method not found %s", pt.ptrTp, name))
+		}
 		newFn, ok := patchPtrTp.MethodByName(origFn.Name)
 		if ok && !isPromotedMethod(newFn.Func) {
 			if err := pt.checkFnSig(origFn.Type, newFn.Func.Type()); err != nil {
