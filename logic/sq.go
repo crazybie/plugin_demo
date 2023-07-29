@@ -1,25 +1,18 @@
 package logic
 
-import "plugin_demo/plugin_sys"
-
 type Sq struct {
 	Id int
 }
 
-var SqClass, sqImp = plugin_sys.NewPatchable(struct {
-	Dump  func(*Sq)
-	GetId func(*Sq) int
-	SetId func(*Sq, int)
-}{})
-
+//go:noinline
 func (sq *Sq) Dump() {
-	sqImp.Dump(sq)
 }
 
+//go:noinline
 func (sq *Sq) GetId() int {
-	return sqImp.GetId(sq)
+	return 0
 }
 
-func (sq *Sq) SetId(v int) {
-	sqImp.SetId(sq, v)
+//go:noinline
+func (sq *Sq) SetId(int) {
 }

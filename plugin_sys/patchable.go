@@ -4,49 +4,26 @@ import (
 	"fmt"
 	"reflect"
 	"runtime"
+	"unsafe"
 )
 
-type PatchableType struct {
-	ptrTp   reflect.Type
-	fnSlots map[string]reflect.Value
-}
+func Patch[OrigTp any](patchObjPtr any) {
+	origPtrTp := reflect.TypeOf((*OrigTp)(nil))
+	patchPtrTp := reflect.TypeOf(patchObjPtr)
+	checkPatchTp(origPtrTp, patchPtrTp)
 
-func NewPatchable[T any](_ T) (*PatchableType, *T) {
-	fnTbPtr := reflect.New(reflect.TypeOf((*T)(nil)).Elem())
-	fnTb := fnTbPtr.Elem()
-	fnTbTp := fnTb.Type()
-
-	r := &PatchableType{
-		fnSlots: map[string]reflect.Value{},
-		ptrTp:   fnTbTp.Field(0).Type.In(0),
-	}
-
-	for i := 0; i < fnTbTp.NumField(); i++ {
-		f := fnTbTp.Field(i)
-		if f.Type.Kind() != reflect.Func {
-			panic(fmt.Errorf("%s field is not function, %s", r.ptrTp, f.Name))
-		} else if f.Type.In(0) != r.ptrTp {
-			panic(fmt.Errorf("receiver type incorret, func %s, need %s, got %s", f.Name, r.ptrTp, f.Type.In(0)))
+	for i := 0; i < origPtrTp.NumMethod(); i++ {
+		origFn := origPtrTp.Method(i)
+		newFn, ok := patchPtrTp.MethodByName(origFn.Name)
+		if ok && !isPromotedMethod(newFn.Func) {
+			patchFn(origFn.Func, newFn.Func)
 		}
-		r.fnSlots[f.Name] = fnTb.Field(i).Addr()
-	}
-
-	return r, fnTbPtr.Interface().(*T)
-}
-
-func (pt *PatchableType) Patch(newPatchPtr any) {
-	patchPtrTp := reflect.TypeOf(newPatchPtr)
-	pt.checkPatchTp(patchPtrTp)
-	for name := range pt.fnSlots {
-		origFn, _ := pt.ptrTp.MethodByName(name)
-		newFn, _ := patchPtrTp.MethodByName(origFn.Name)
-		pt.fnSlots[origFn.Name].Elem().Set(reinterpretedCast(origFn.Type, newFn.Func))
 	}
 }
 
-func (pt *PatchableType) checkPatchTp(patchPtrTp reflect.Type) {
+func checkPatchTp(origPtrTp, patchPtrTp reflect.Type) {
 	patch := patchPtrTp.Elem()
-	orig := pt.ptrTp.Elem()
+	orig := origPtrTp.Elem()
 	embeddedTp := patch.Field(0).Type
 
 	if patch.Size() != orig.Size() {
@@ -56,28 +33,23 @@ func (pt *PatchableType) checkPatchTp(patchPtrTp reflect.Type) {
 		panic(fmt.Errorf("patch type must embed orig type as first elem, orig: %s, patch: %s, first elem: %s", orig, patch, embeddedTp))
 	}
 
-	for name := range pt.fnSlots {
-		origFn, ok := pt.ptrTp.MethodByName(name)
-		if !ok {
-			panic(fmt.Errorf("%s method not found %s", pt.ptrTp, name))
-		}
+	for i := 0; i < origPtrTp.NumMethod(); i++ {
+		origFn := origPtrTp.Method(i)
 		newFn, ok := patchPtrTp.MethodByName(origFn.Name)
 		if ok && !isPromotedMethod(newFn.Func) {
-			if err := pt.checkFnSig(origFn.Type, newFn.Func.Type()); err != nil {
-				panic(fmt.Errorf("%s method %s, %w", pt.ptrTp, origFn.Name, err))
+			if err := checkFnSig(origFn.Type, newFn.Func.Type()); err != nil {
+				panic(fmt.Errorf("%s method %s, %w", origPtrTp, origFn.Name, err))
 			}
-		} else {
-			panic(fmt.Errorf("%s method has no patch: %s", pt.ptrTp, origFn.Name))
 		}
 	}
 }
 
-func (pt *PatchableType) checkFnSig(to, from reflect.Type) error {
+func checkFnSig(to, from reflect.Type) error {
 	if from.NumIn() != to.NumIn() {
-		return fmt.Errorf("input param count mismatch, orig: %v, patch: %v", to.NumIn(), from.NumIn())
+		return fmt.Errorf("input param count mismatch, orig: %v, patch: %v", to, from)
 	}
 	if from.NumOut() != to.NumOut() {
-		return fmt.Errorf("output param count mismatch, orig: %v, patch: %v", to.NumOut(), from.NumOut())
+		return fmt.Errorf("output param count mismatch, orig: %v, patch: %v", to, from)
 	}
 	for i := 0; i < from.NumIn(); i++ {
 		patch := from.In(i)
@@ -100,12 +72,6 @@ func (pt *PatchableType) checkFnSig(to, from reflect.Type) error {
 	return nil
 }
 
-func reinterpretedCast(dst reflect.Type, src reflect.Value) (ret reflect.Value) {
-	ret = reflect.New(dst)
-	reflect.NewAt(src.Type(), ret.UnsafePointer()).Elem().Set(src)
-	return ret.Elem()
-}
-
 func isPromotedMethod(f reflect.Value) bool {
 	if f.Kind() != reflect.Func {
 		return false
@@ -123,8 +89,41 @@ type outer struct {
 
 func (*inner) Foo() {}
 
+//go:noinline
+func a1() int { return 1 }
+
+//go:noinline
+func a2() int { return 2 }
+
 func init() {
 	if !isPromotedMethod(reflect.TypeOf((*outer)(nil)).Method(0).Func) {
 		panic("isPromotedMethod not work")
 	}
+
+	patchFn(reflect.ValueOf(a1), reflect.ValueOf(a2))
+	if a1() != 2 {
+		panic("dynamic patching not work for your platform")
+	}
+}
+
+type value struct {
+	_   uintptr
+	ptr unsafe.Pointer
+}
+
+func getFnCodePtr(v reflect.Value) unsafe.Pointer {
+	return (*value)(unsafe.Pointer(&v)).ptr
+}
+
+func patchFn(target, replacement reflect.Value) {
+	from, to := target.Pointer(), (uintptr)(getFnCodePtr(replacement))
+	execMemCopy(from, codeGenJmpTo(to))
+}
+
+func addrAsBytes(addr uintptr, size int) []byte {
+	return *(*[]byte)(unsafe.Pointer(&reflect.SliceHeader{
+		Data: addr,
+		Len:  size,
+		Cap:  size,
+	}))
 }
