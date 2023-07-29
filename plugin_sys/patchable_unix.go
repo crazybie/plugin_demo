@@ -1,5 +1,10 @@
 //go:build !windows
 
+/*
+ * Copyright (C) 2023 crazybie@github.com.
+ *
+ */
+
 package plugin_sys
 
 import (

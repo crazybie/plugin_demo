@@ -1,3 +1,8 @@
+/*
+ * Copyright (C) 2023 crazybie@github.com.
+ *
+ */
+
 package logic
 
 type Sq struct {
