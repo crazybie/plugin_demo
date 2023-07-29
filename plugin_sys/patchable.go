@@ -7,21 +7,20 @@ import (
 	"unsafe"
 )
 
+type patchedMethod struct {
+	orig  reflect.Value
+	patch reflect.Value
+}
+
 func Patch[OrigTp any](patchObjPtr any) {
 	origPtrTp := reflect.TypeOf((*OrigTp)(nil))
 	patchPtrTp := reflect.TypeOf(patchObjPtr)
-	checkPatchTp(origPtrTp, patchPtrTp)
-
-	for i := 0; i < origPtrTp.NumMethod(); i++ {
-		origFn := origPtrTp.Method(i)
-		newFn, ok := patchPtrTp.MethodByName(origFn.Name)
-		if ok && !isPromotedMethod(newFn.Func) {
-			patchFn(origFn.Func, newFn.Func)
-		}
+	for _, p := range checkPatchTp(origPtrTp, patchPtrTp) {
+		patchFn(p.orig, p.patch)
 	}
 }
 
-func checkPatchTp(origPtrTp, patchPtrTp reflect.Type) {
+func checkPatchTp(origPtrTp, patchPtrTp reflect.Type) (patchMethods []patchedMethod) {
 	patch := patchPtrTp.Elem()
 	orig := origPtrTp.Elem()
 	embeddedTp := patch.Field(0).Type
@@ -40,8 +39,10 @@ func checkPatchTp(origPtrTp, patchPtrTp reflect.Type) {
 			if err := checkFnSig(origFn.Type, newFn.Func.Type()); err != nil {
 				panic(fmt.Errorf("%s method %s, %w", origPtrTp, origFn.Name, err))
 			}
+			patchMethods = append(patchMethods, patchedMethod{origFn.Func, newFn.Func})
 		}
 	}
+	return
 }
 
 func checkFnSig(to, from reflect.Type) error {
@@ -115,8 +116,8 @@ func getFnCodePtr(v reflect.Value) unsafe.Pointer {
 	return (*value)(unsafe.Pointer(&v)).ptr
 }
 
-func patchFn(target, replacement reflect.Value) {
-	from, to := target.Pointer(), (uintptr)(getFnCodePtr(replacement))
+func patchFn(orig, patch reflect.Value) {
+	from, to := orig.Pointer(), (uintptr)(getFnCodePtr(patch))
 	execMemCopy(from, codeGenJmpTo(to))
 }
 

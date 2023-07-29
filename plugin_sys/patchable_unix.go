@@ -7,17 +7,12 @@ import (
 )
 
 const (
-	flagsPageExecuteReadwrite = syscall.PROT_READ | syscall.PROT_WRITE | syscall.PROT_EXEC
-	flagsPageExecuteRead      = syscall.PROT_READ | syscall.PROT_EXEC
+	flagsPageReadwriteExecute = syscall.PROT_READ | syscall.PROT_WRITE | syscall.PROT_EXEC
+	flagsPageReadExecute      = syscall.PROT_READ | syscall.PROT_EXEC
 )
 
-var pageSize int
-
-func init() {
-	pageSize = syscall.Getpagesize()
-}
-
 func mProtect(addr uintptr, size int, flags int) {
+	pageSize := syscall.Getpagesize()
 	pageStart := addr & ^(uintptr(pageSize - 1))
 	for p := pageStart; p < addr+uintptr(size); p += uintptr(pageSize) {
 		err := syscall.Mprotect(addrAsBytes(p, pageSize), flags)
@@ -28,7 +23,7 @@ func mProtect(addr uintptr, size int, flags int) {
 }
 
 func execMemCopy(addr uintptr, data []byte) {
-	mProtect(addr, len(data), flagsPageExecuteReadwrite)
+	mProtect(addr, len(data), flagsPageReadwriteExecute)
 	copy(addrAsBytes(addr, len(data)), data[:])
-	mProtect(addr, len(data), flagsPageExecuteRead)
+	mProtect(addr, len(data), flagsPageReadExecute)
 }
