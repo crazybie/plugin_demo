@@ -10,7 +10,7 @@ import (
 	"unsafe"
 )
 
-const flagsPageExecuteReadwrite = 0x40
+const flagsPageReadWriteExecute = 0x40
 
 var impMProtect = syscall.NewLazyDLL("kernel32.dll").NewProc("VirtualProtect")
 
@@ -23,7 +23,7 @@ func mProtect(addr uintptr, size int, flags uint32) (outFlags uint32) {
 }
 
 func execMemCopy(addr uintptr, data []byte) {
-	oldFlags := mProtect(addr, len(data), flagsPageExecuteReadwrite)
-	copy(addrAsBytes(addr, len(data)), data[:])
+	oldFlags := mProtect(addr, len(data), flagsPageReadWriteExecute)
+	copy(bytes(addr, len(data)), data[:])
 	mProtect(addr, len(data), oldFlags)
 }

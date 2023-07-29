@@ -108,28 +108,18 @@ func init() {
 
 	patchFn(reflect.ValueOf(a1), reflect.ValueOf(a2))
 	if a1() != 2 {
-		panic("dynamic patching not work for your platform")
+		panic("patching not work for this platform")
 	}
 }
 
-type value struct {
-	_   uintptr
-	ptr unsafe.Pointer
-}
-
-func getFnCodePtr(v reflect.Value) unsafe.Pointer {
-	return (*value)(unsafe.Pointer(&v)).ptr
+func getFnCodePtr(v reflect.Value) uintptr {
+	return (*[2]uintptr)(unsafe.Pointer(&v))[1]
 }
 
 func patchFn(orig, patch reflect.Value) {
-	from, to := orig.Pointer(), (uintptr)(getFnCodePtr(patch))
-	execMemCopy(from, codeGenJmpTo(to))
+	execMemCopy(orig.Pointer(), codeGenJmpTo(getFnCodePtr(patch)))
 }
 
-func addrAsBytes(addr uintptr, size int) []byte {
-	return *(*[]byte)(unsafe.Pointer(&reflect.SliceHeader{
-		Data: addr,
-		Len:  size,
-		Cap:  size,
-	}))
+func bytes(addr uintptr, size int) []byte {
+	return unsafe.Slice((*byte)(unsafe.Pointer(addr)), size)
 }
