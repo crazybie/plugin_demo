@@ -17,6 +17,7 @@ func (sq *Sq) GetId() int {
 }
 
 func (sq *Sq) SetId(v int) {
+	println("set id to", v)
 	sq.Id = v
 }
 
