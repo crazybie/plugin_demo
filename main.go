@@ -7,16 +7,19 @@ package main
 
 import (
 	"plugin_demo/logic"
-	"plugin_demo/plugin_imp"
-	"plugin_demo/plugin_sys"
+	"time"
 )
 
 func main() {
 	sq := logic.Sq{Id: 1}
 
-	plugin_sys.Patch[logic.Sq](plugin_imp.NewSq())
+	for {
+		time.Sleep(5 * time.Second)
+		sq.LoadPatch()
 
-	sq.Dump()
-	sq.SetId(111)
-	println(sq.GetId())
+		sq.Dump()
+		sq.SetId(111)
+		println(sq.GetId())
+	}
+
 }

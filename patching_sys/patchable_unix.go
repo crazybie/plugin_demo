@@ -1,11 +1,11 @@
-//go:build !windows
+//go:build unix
 
 /*
  * Copyright (C) 2023 crazybie@github.com.
  *
  */
 
-package plugin_sys
+package patching_sys
 
 import (
 	"syscall"
