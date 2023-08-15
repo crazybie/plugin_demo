@@ -13,18 +13,23 @@ type Sq struct {
 
 //go:noinline
 func (sq *Sq) Dump() {
-	println("new dump 222")
+	println("new dump", sq.Id)
 }
 
 //go:noinline
 func (sq *Sq) GetId() int {
-	return 0
+	return sq.Id
 }
 
 //go:noinline
-func (sq *Sq) SetId(int) {
+func (sq *Sq) SetId(v int) {
+	sq.Id = v
 }
 
 func (sq *Sq) LoadPatch() {
 	patching_sys.ApplyPendingPatch[Sq]()
+}
+
+func (sq *Sq) Clone() *Sq {
+	return &Sq{1222}
 }
