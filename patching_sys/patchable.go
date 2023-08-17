@@ -1,9 +1,13 @@
+//go:build (linux && cgo) || (darwin && cgo) || (freebsd && cgo)
+
 /*
  * Copyright (C) 2023 crazybie@github.com.
  *
  */
 
 package patching_sys
+
+import "C"
 
 import (
 	"fmt"
@@ -18,6 +22,30 @@ import (
 	"time"
 	"unsafe"
 )
+
+/*
+   #cgo linux LDFLAGS: -ldl
+   #include <dlfcn.h>
+   #include <limits.h>
+   #include <stdlib.h>
+   #include <stdint.h>
+   #include <stdio.h>
+
+   static void* pluginOpen(const char* path, char** err) {
+   	void* h = dlopen(path, RTLD_NOW|RTLD_GLOBAL);
+   	if (h == NULL) {
+   		*err = (char*)dlerror();
+   	}
+   	return h;
+   }
+*/
+import "C"
+
+var UnsafeMode = true
+
+func init() {
+	startDaemon()
+}
 
 func typeToKey(v reflect.Type) string {
 	return v.PkgPath() + "." + v.String()
@@ -43,11 +71,11 @@ type Factory interface {
 	Reset()
 }
 
-type SoFactory struct {
+type SoTypeFactory struct {
 	types map[string]reflect.Type
 }
 
-func (s *SoFactory) RegisterTp(t any) {
+func (s *SoTypeFactory) RegisterTp(t any) {
 	v := reflect.TypeOf(t)
 	k := typeToKey(v.Elem())
 	if _, ok := s.types[k]; !ok {
@@ -56,19 +84,19 @@ func (s *SoFactory) RegisterTp(t any) {
 	}
 }
 
-func (s *SoFactory) GetTypes() map[string]reflect.Type {
+func (s *SoTypeFactory) GetTypes() map[string]reflect.Type {
 	return s.types
 }
 
-func (s *SoFactory) Init() string {
+func (s *SoTypeFactory) Init() string {
 	return "default"
 }
 
-func (s *SoFactory) Reset() {
+func (s *SoTypeFactory) Reset() {
 	s.types = map[string]reflect.Type{}
 }
 
-var defaultFactory = SoFactory{
+var defaultFactory = SoTypeFactory{
 	types: map[string]reflect.Type{},
 }
 
@@ -77,9 +105,21 @@ var pendingTypes = struct {
 	types map[string]reflect.Type
 }{types: map[string]reflect.Type{}}
 
-func ApplyPendingPatch[T any]() {
+func Register[T any]() {
 	defaultFactory.RegisterTp((*T)(nil))
+}
 
+func HasPatch[T any]() bool {
+	pendingTypes.RLock()
+	defer pendingTypes.RUnlock()
+
+	old := reflect.TypeOf((*T)(nil))
+	tpKey := typeToKey(old.Elem())
+	_, ok := pendingTypes.types[tpKey]
+	return ok
+}
+
+func ApplyPatch[T any]() {
 	pendingTypes.Lock()
 	defer pendingTypes.Unlock()
 
@@ -90,16 +130,20 @@ func ApplyPendingPatch[T any]() {
 		return
 	}
 	defer delete(pendingTypes.types, tpKey)
+	patchType(old, tp)
+}
 
+func patchType(old, tp reflect.Type) bool {
 	fmt.Printf("apply patching to %s\n", old.String())
 	fns := scanMethods(old, tp)
 	for _, p := range fns {
 		patchFn(p.orig, p.patch)
 	}
 	fmt.Printf("patched methods: %v\n", len(fns))
+	return len(fns) > 0
 }
 
-func scanTypesFromPlugin(so string) {
+func scanTypesFromPlugin(so string) bool {
 	bypassPkgHashCheck(so)
 	p, err := plugin.Open(so)
 	if err != nil {
@@ -119,15 +163,25 @@ func scanTypesFromPlugin(so string) {
 	}
 
 	newTps := f.GetTypes()
+	patched := false
 	for c, tp := range newTps {
 		validateTpVer(tp, ver)
-
-		pendingTypes.Lock()
 		k := convertToOrigTypeKey(c)
-		pendingTypes.types[k] = tp
-		pendingTypes.Unlock()
-		fmt.Printf("patch detected: %s\n", k)
+
+		if UnsafeMode {
+			old, ok := defaultFactory.types[k]
+			if ok {
+				patched = patchType(old, tp)
+			}
+		} else {
+			pendingTypes.Lock()
+			pendingTypes.types[k] = tp
+			pendingTypes.Unlock()
+			fmt.Printf("patch detected: %s\n", k)
+		}
 	}
+
+	return patched
 }
 
 func validateTpVer(tp reflect.Type, ver string) {
@@ -143,11 +197,6 @@ func validateTpVer(tp reflect.Type, ver string) {
 		panic("patching not work, new method not generated correctly.")
 	}
 }
-
-var fileTimes = struct {
-	sync.RWMutex
-	times map[string]int64
-}{times: map[string]int64{}}
 
 func startDaemon() {
 	fmt.Printf("plugin daemon started.\n")
@@ -174,20 +223,13 @@ func startDaemon() {
 }
 
 func handleSo(soDir string) {
-	fileTimes.Lock()
-	defer fileTimes.Unlock()
-
 	items, _ := os.ReadDir(soDir)
 	for _, item := range items {
 		if strings.HasSuffix(item.Name(), ".so") {
 
 			full := filepath.Join(soDir, item.Name())
-			info, _ := item.Info()
-
-			if t, ok := fileTimes.times[full]; !ok || info.ModTime().Unix() > t {
-				fmt.Printf("detected new so: %s\n", item.Name())
-				scanTypesFromPlugin(full)
-				fileTimes.times[full] = info.ModTime().Unix()
+			fmt.Printf("detected new so: %s\n", item.Name())
+			if scanTypesFromPlugin(full) {
 				_ = os.Remove(full)
 			}
 		}
@@ -260,10 +302,6 @@ func checkFnSig(to, from reflect.Type) error {
 	return nil
 }
 
-func init() {
-	startDaemon()
-}
-
 //============================================================================
 // Utils
 //============================================================================
@@ -290,4 +328,142 @@ func patchFn(orig, patch reflect.Value) {
 
 func bytes(addr uintptr, size int) []byte {
 	return unsafe.Slice((*byte)(unsafe.Pointer(addr)), size)
+}
+
+//============================================================================
+// HACK
+//============================================================================
+
+// copy from runtime/plugin.go
+
+//go:linkname firstmoduledata runtime.firstmoduledata
+var firstmoduledata moduledata
+
+type modulehash struct {
+	modulename   string
+	linktimehash string
+	runtimehash  *string
+}
+
+type textsect struct {
+	vaddr    uintptr // prelinked section vaddr
+	end      uintptr // vaddr + section length
+	baseaddr uintptr // relocated section address
+}
+
+type functab struct {
+	entryoff uint32 // relative to runtime.text
+	funcoff  uint32
+}
+
+// A ptabEntry is generated by the compiler for each exported function
+// and global variable in the main package of a plugin. It is used to
+// initialize the plugin module's symbol map.
+type ptabEntry struct {
+	name uint32
+	typ  uint32
+}
+
+type bitvector struct {
+	n        int32 // # of bits
+	bytedata *uint8
+}
+
+type moduledata struct {
+	pcHeader     uintptr
+	funcnametab  []byte
+	cutab        []uint32
+	filetab      []byte
+	pctab        []byte
+	pclntable    []byte
+	ftab         []functab
+	findfunctab  uintptr
+	minpc, maxpc uintptr
+
+	text, etext           uintptr
+	noptrdata, enoptrdata uintptr
+	data, edata           uintptr
+	bss, ebss             uintptr
+	noptrbss, enoptrbss   uintptr
+	covctrs, ecovctrs     uintptr
+	end, gcdata, gcbss    uintptr
+	types, etypes         uintptr
+	rodata                uintptr
+	gofunc                uintptr // go.func.*
+
+	textsectmap []textsect
+	typelinks   []int32 // offsets from types
+	itablinks   []uintptr
+
+	ptab []ptabEntry
+
+	pluginpath string
+	pkghashes  []modulehash
+
+	modulename   string
+	modulehashes []modulehash
+
+	hasmain uint8 // 1 if module contains the main function, 0 otherwise
+
+	gcdatamask, gcbssmask bitvector
+
+	typemap map[uintptr]uintptr // offset to *_rtype in previous module
+
+	bad bool // module failed to load and should be ignored
+
+	next *moduledata
+}
+
+// Plugin is a loaded Go plugin.
+type Plugin struct {
+	pluginpath string
+	err        string        // set if plugin failed to load
+	loaded     chan struct{} // closed when loaded
+}
+
+func bypassPkgHashCheck(name string) {
+	cPath := make([]byte, C.PATH_MAX+1)
+	cRelName := make([]byte, len(name)+1)
+	copy(cRelName, name)
+	if C.realpath(
+		(*C.char)(unsafe.Pointer(&cRelName[0])),
+		(*C.char)(unsafe.Pointer(&cPath[0]))) == nil {
+		return
+	}
+
+	var cErr *C.char
+	C.pluginOpen((*C.char)(unsafe.Pointer(&cPath[0])), &cErr)
+	if cErr != nil {
+		return
+	}
+	md := firstmoduledata.next
+	for pmd := firstmoduledata.next; pmd != nil; pmd = pmd.next {
+		if pmd.bad {
+			md = nil // we only want the last module
+			continue
+		}
+		md = pmd
+	}
+	newhash := make([]modulehash, 0, len(md.pkghashes))
+	for _, pkghash := range md.pkghashes {
+		pkghash.linktimehash = *pkghash.runtimehash
+		newhash = append(newhash, pkghash)
+	}
+	md.pkghashes = newhash
+}
+
+func unload(p *plugin.Plugin) {
+	imp := (*Plugin)(unsafe.Pointer(p))
+	md := firstmoduledata.next
+	for pmd := firstmoduledata.next; pmd != nil; pmd = pmd.next {
+		if pmd.bad {
+			md = nil // we only want the last module
+			continue
+		}
+		md = pmd
+		if md.pluginpath == imp.pluginpath {
+			md.pluginpath = ""
+			return
+		}
+	}
 }

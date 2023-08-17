@@ -1,3 +1,5 @@
+# Copyright (C) 2023 crazybie@github.com.
+
 import argparse
 import datetime
 import json
@@ -12,23 +14,28 @@ import traceback
 AParser = argparse.ArgumentParser()
 AParser.add_argument("--output_dir", "-o", default=".")
 AParser.add_argument("--debug", "-d", default="")
-AParser.add_argument("--patching_sys_pkg_dir", default="plugin_demo/patching_sys")
 AParser.add_argument("--watch_dir", "-w", default=".")
 AParser.add_argument("--input_dir", "-i")
+AParser.add_argument("--tags", default="gdb")
+AParser.add_argument("--clone_tmp", default="/tmp")
 app_args = AParser.parse_args()
 
 debug = app_args.debug
 
 
-# Pattern: patching_sys.GetFactories().RegisterTp((*PlayerObj)(nil))
+# Pattern: patching_sys.Register[PlayerObj]()
 def scan_types(folder):
-    types = []
+    types = set()
     files = []
+    reg_files = []
     for i in os.listdir(folder):
         if i.endswith('.go'):
             full = os.path.abspath(os.path.join(folder, i))
             d = open(full).read()
-            types += list(re.findall(r'\s+patching_sys\.ApplyPendingPatch\[(.*)\]\(\)', d))
+            reg_types = list(re.findall(r'\s+patching_sys\.Register\[(.*)\]\(\)', d))
+            types.update(reg_types)
+            if reg_types:
+                reg_files.append(full)
             files.append((full, d))
 
     print('discovered types:')
@@ -36,11 +43,11 @@ def scan_types(folder):
     for i in types:
         print(i)
     print('------')
-    return files, types
+    return files, types, reg_files
 
 
 def clone_package(folder, files, ver):
-    new_folder = f'{folder}_{ver}'
+    new_folder = f'{app_args.clone_tmp}/{folder}_{ver}'
     shutil.rmtree(new_folder, ignore_errors=True)
     os.makedirs(new_folder)
     new_files = []
@@ -50,11 +57,11 @@ def clone_package(folder, files, ver):
         new_files.append((f2, d))
         replace[full] = f2
 
-    overlay = os.path.join(folder, 'overlay.json')
+    overlay = os.path.join(new_folder, 'overlay.json')
     open(overlay, 'w').write(json.dumps({'Replace': replace}, indent=1))
     if debug:
         print('write overlay', os.path.abspath(overlay))
-    return new_folder, new_files, overlay
+    return new_folder, new_files, overlay, replace
 
 
 def replace_package(files):
@@ -76,7 +83,7 @@ def replace_package(files):
     return pkg
 
 
-def code_gen(folder, types, ver):
+def code_gen(out_file, types, ver):
     new_types = ''
     reg_types = ''
 
@@ -97,14 +104,9 @@ type SoTmp{ver}_{i} struct {{
     '''
 
     so_main = f'''
-package main
-
-import (
-    "{app_args.patching_sys_pkg_dir}"
-)
 
 type TmpFactory{ver} struct{{
-    patching_sys.SoFactory
+    patching_sys.SoTypeFactory
 }}
 
 var tmpFactory TmpFactory{ver}
@@ -116,17 +118,13 @@ func GetFactory() patching_sys.Factory {{
 {new_types}
 
 func (f *TmpFactory{ver}) Init() string {{  
-    f.SoFactory.Reset()
+    f.SoTypeFactory.Reset()
     {reg_types}
     return "{ver}"
 }}
     '''
 
-    if debug:
-        print(so_main)
-    f_name = os.path.join(folder, 'so_main.go')
-    open(f_name, 'w').write(so_main)
-    return f_name
+    open(out_file, 'a').write(so_main)
 
 
 def build_so(folder, overlay, so_output):
@@ -136,23 +134,21 @@ def build_so(folder, overlay, so_output):
     os.chdir(folder)
     try:
         s_tm = datetime.datetime.now()
-        args = ['go', 'build', '-buildmode=plugin', f'-o={abs_out_dir}/{so_output}', '-tags=gdb',
+        full = f'{abs_out_dir}/{so_output}'
+        args = ['go', 'build', '-buildmode=plugin', f'-o={full}', f'-tags={app_args.tags}',
                 '-gcflags=all=-N -l']
         if overlay:
-            args.append(f'-overlay={os.path.basename(overlay)}')
+            args.append(f'-overlay={overlay}')
         if debug: print(args)
         subprocess.check_call(args)
         print('took', datetime.datetime.now() - s_tm)
+        return full
     finally:
         os.chdir(cwd)
 
 
-def cleanup(new_folder, files, main_file, overlay):
+def cleanup(new_folder):
     shutil.rmtree(new_folder, ignore_errors=True)
-    if main_file:
-        os.remove(main_file)
-    if overlay:
-        os.remove(overlay)
     if debug:
         print('cleaned up')
 
@@ -196,26 +192,34 @@ def file_changed(f):
     handle_folder(folder)
 
 
+last_so = ''
+
+
 def handle_folder(folder):
     ver = f'{random.randint(0, 100000)}'
-
-    files, main_file, new_folder, overlay = [], '', '', ''
+    global last_so
+    last_so = ''
+    new_folder = []
     try:
-        files, types = scan_types(folder)
+        files, types, reg_files = scan_types(folder)
         if not types:
             print('no types discovered')
             return
 
-        new_folder, files, overlay = clone_package(folder, files, ver)
+        new_folder, files, overlay, replace = clone_package(folder, files, ver)
         pkg = replace_package(files)
-        main_file = code_gen(folder, types, ver)
-        build_so(folder, overlay, f'{pkg}_{ver}.so')
+        code_gen(replace[reg_files[0]], types, ver)
+        last_so = build_so(folder, overlay, f'{pkg}_{ver}.so')
     finally:
-        cleanup(new_folder, files, main_file, overlay)
+        cleanup(new_folder)
 
 
 if app_args.input_dir:
     handle_folder(app_args.input_dir)
 else:
-    w = DirWatcher(app_args.watch_dir, ".go", file_changed)
-    w.run()
+    try:
+        w = DirWatcher(app_args.watch_dir, ".go", file_changed)
+        w.run()
+    finally:
+        if os.path.isfile(last_so):
+            os.remove(last_so)
